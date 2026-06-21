@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+
+# Run like this: env/bin/python3 trackball
+
+import os
+import select
+import evdev # see https://python-evdev.readthedocs.io/en/latest/usage.html
+import time
+import xmlrpc.client # for connection to pymol
+
+
+def dump_mice():
+    print("Connected mice:")
+    for path in evdev.list_devices():
+        dev = evdev.InputDevice(path)
+        try:
+            caps = dev.capabilities()
+        except OSError:
+            continue
+        if evdev.ecodes.EV_REL not in caps:
+            continue
+        print()
+        print(path)
+        print("name :", dev.name)
+        print("phys :", dev.phys)
+        print("info :", dev.info)
+
+
+def find_trackball():
+    """
+    Find two mice used in the 3D trackball
+    """
+    devices = []
+
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+        except OSError:
+            continue
+        if dev.name != "Instant USB Optical Mouse":
+            continue
+        caps = dev.capabilities()
+        if evdev.ecodes.EV_REL not in caps:
+            continue
+        rels = set(caps[evdev.ecodes.EV_REL])
+        if (evdev.ecodes.REL_X in rels and evdev.ecodes.REL_Y in rels):
+            devices.append((dev.phys, path))
+
+    if len(devices) != 2:
+        dump_mice()
+        raise RuntimeError(
+            f"Expected 2 trackball sensors, found {len(devices)}: "
+            f"{[path for phys, path in devices]}"
+        )
+    devices.sort() # by phys - stable across reboots - swap connectors once if wrong
+    return devices[0][1], devices[1][1]
+
+
+def trackball_activity():
+    """
+    Wait for activity of any of the two XY sensors, coalesque what comes
+    shortly after and report the movement event as physically detected.
+    """
+    left_path, right_path = find_trackball()
+    left = evdev.InputDevice(left_path)
+    right = evdev.InputDevice(right_path)
+    print("left:", left)
+    print("right:", right)
+    left.grab()
+    right.grab()
+    fds = {
+        left.fd: ("left", left),
+        right.fd: ("right", right),
+    }
+
+    while True:
+        ready, _, _ = select.select(fds, [], []) # see https://docs.python.org/3/library/select.html
+        time.sleep(0.001)
+        left_dx = 0
+        left_dy = 0
+        right_dx = 0
+        right_dy = 0
+
+        for i in range(5):
+            ready, _, _ = select.select(fds, [], [], 0) # maybe more fds now, after sleep or even after dev.read()
+            if len(ready)==0:
+                break
+    
+            for fd in ready:
+                name, dev = fds[fd]
+                new_event_count = 0
+                for event in dev.read(): # reading from a generator, ~40 events max
+                    if event.type != evdev.ecodes.EV_REL:
+                        continue
+                    new_event_count += 1
+                    if event.code == evdev.ecodes.REL_X:
+                        if name=="left":
+                            left_dx += event.value
+                        else:
+                            right_dx += event.value
+                    elif event.code == evdev.ecodes.REL_Y:
+                        if name=="left":
+                            left_dy += event.value
+                        else:
+                            right_dy += event.value
+                if new_event_count==0:
+                    break
+    
+        if left_dx or left_dy or right_dx or right_dy:
+            yield "move", time.monotonic(), (left_dx, left_dy, right_dx, right_dy)
+
+
+def trackball_xyz():
+    """
+    Fuse physical movement report from sensors into a 3D movement where
+    X and Y are axis as in mathematics, Z is counter-clockwise rotation.
+    Also fix resolution discrepancy between the two mice.
+    """
+    x_corr = 1/1.41 # x is on full circumference, unlike y and z which have sqrt(2) times less
+    # right mouse has higher resolution, likely 1600 vs 1200 (different default after power on)
+    # (Maybe it remembers what I set by the now unsoldered resolution button after all?)
+    left_corr = 1600/1200
+    for kind, t, (lx, ly, rx, ry) in trackball_activity():
+        lx *= left_corr
+        ly *= left_corr
+        #slip = lx-rx
+        #print(f"{slip=}, {lx} vs {rx}, {rx/lx if lx!=0 else 1000}")
+        #print(f"y ratio: {ry/ly if ly!=0 else 1000}")
+        dx = (-lx-rx)*x_corr
+        dy = -ly-ry
+        dz = -ly+ry
+        yield "move3", t, (dx, dy, dz)
+
+
+pymol_socket = xmlrpc.client.ServerProxy("http://localhost:9123/RPC2") # expects "pymol -R" running, now or later
+batch_pymol_text = "" # accumulated text
+
+
+def send_pymol_batch():
+    """
+    Send commands accumulated by pymol()
+    """
+    global batch_pymol_text
+    n = len(batch_pymol_text.split("\n"))
+    print(f'Sending {n} command line{"s" if n>1 else ""} to pymol')
+    try:
+        pymol_socket.do(batch_pymol_text)
+    except:
+        print("Failed to send commands to pymol")
+        raise
+    finally:
+        batch_pymol_text = "" # give up on these lines if not sent
+
+
+def pymol(line, cell=None):
+    global batch_pymol_text
+    batch_pymol_text += line+"\n"
+
+
+# For smooth movement, updating all 3 axis in one RPC call works best.
+# We need to inject this helper into pymol. It magically becomes available
+# in the already running RPC server (!). See pymol's source: pymol/rpc.py
+intro_hack = """python
+from pymol import cmd
+def turn_xyz(x, y, z): cmd.turn("x", x); cmd.turn("y", y); cmd.turn("z", z)
+cmd.turn_xyz = turn_xyz
+python end
+"""
+
+def trackball_pymol():
+    """
+    Read 3D trackball movements and send camera position updates to pymol.
+    If needed, inject the helper procedure there. Both pymol and this code
+    can start/stop at will and connection just works.
+    """
+    pymol_connection_status = "did not try yet"
+    for kind, t, (dx, dy, dz) in trackball_xyz():
+        dx, dy, dz = -dy*0.085, dz*0.085, -dx*0.085 # map between ball and pymol coordinates
+        try:
+            pymol_socket.turn_xyz(dx, dy, dz)
+            if pymol_connection_status != "OK":
+                print("Connection for XYZ deltas to pymol works even without code inject")
+                pymol_connection_status = "OK"
+        except:
+            print("Failed to send XYZ deltas to pymol")
+            pymol_connection_status = "failed XYZ"
+            try:
+                pymol(intro_hack)
+                send_pymol_batch()
+                print("Injected XYZ receiver into pymol")
+                pymol_socket.turn_xyz(dx, dy, dz) # try again
+                print("Established working connection for XYZ deltas to pymol")
+                pymol_connection_status = "OK"
+            except:
+                print('No "pymol -R" running?')
+                pymol_connection_status = "failed inject"
+                time.sleep(0.5) # throttle our attempts to reach pymol
+
+        time.sleep(0.01) # send 100 XYZ updates per second at maximum
+
+
+trackball_pymol()
+
+
