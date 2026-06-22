@@ -133,29 +133,6 @@ def trackball_xyz():
 
 
 pymol_socket = xmlrpc.client.ServerProxy("http://localhost:9123/RPC2") # expects "pymol -R" running, now or later
-batch_pymol_text = "" # accumulated text
-
-
-def send_pymol_batch():
-    """
-    Send commands accumulated by pymol()
-    """
-    global batch_pymol_text
-    n = len(batch_pymol_text.split("\n"))
-    print(f'Sending {n} command line{"s" if n>1 else ""} to pymol')
-    try:
-        pymol_socket.do(batch_pymol_text)
-    except:
-        print("Failed to send commands to pymol")
-        raise
-    finally:
-        batch_pymol_text = "" # give up on these lines if not sent
-
-
-def pymol(line, cell=None):
-    global batch_pymol_text
-    batch_pymol_text += line+"\n"
-
 
 # For smooth movement, updating all 3 axis in one RPC call works best.
 # We need to inject this helper into pymol. It magically becomes available
@@ -185,8 +162,7 @@ def trackball_pymol():
             print("Failed to send XYZ deltas to pymol")
             pymol_connection_status = "failed XYZ"
             try:
-                pymol(intro_hack)
-                send_pymol_batch()
+                pymol_socket.do(intro_hack)
                 print("Injected XYZ receiver into pymol")
                 pymol_socket.turn_xyz(dx, dy, dz) # try again
                 print("Established working connection for XYZ deltas to pymol")
