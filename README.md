@@ -11,5 +11,19 @@ If one day the model is ready, I will put it to [my Printables page](https://www
 In the meantime, I think some pymol related tricks I used are worth publishing by themselves.
 
 ## Installation
-See my [hacktrack](https://github.com/vaclavhanzl/hacktrack) project for creating a suitable virtual
-environment (you can leave out xdo, trackball3D does not use it).
+
+You need to get priviledges to be able to mess with mouse inputs:
+```
+sudo gpasswd -a YOUR-OWN-USERNAME input
+```
+Get the source code, create virtual environment for it, install evdev and run the code:
+```
+git clone https://github.com/vaclavhanzl/trackball3D.git
+cd trackball3D
+env/bin/python3 -m venv env
+env/bin/pip3 install evdev
+env/bin/python3 trackball
+```
+
+(See my [hacktrack](https://github.com/vaclavhanzl/hacktrack) project for details of what is needed.
+You can leave out xdo, trackball3D does not use it).
