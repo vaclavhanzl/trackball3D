@@ -30,9 +30,15 @@ def find_trackball():
     """
     Find two mice used in the 3D trackball
     """
-    devices = []
+    all_devices = evdev.list_devices()
+    if all_devices==[]:
+        raise RuntimeError(
+            "Expected 2 trackball sensors, found no devices at all.\n"
+            "Maybe you need to do: sudo gpasswd -a YOUR_USERNAME input"
+        )
 
-    for path in evdev.list_devices():
+    devices = []
+    for path in all_devices:
         try:
             dev = evdev.InputDevice(path)
         except OSError:
