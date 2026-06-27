@@ -20,7 +20,7 @@ Get the source code, create virtual environment for it, install evdev and run th
 ```
 git clone https://github.com/vaclavhanzl/trackball3D.git
 cd trackball3D
-env/bin/python3 -m venv env
+python3 -m venv env
 env/bin/pip3 install evdev
 env/bin/python3 trackball
 ```
