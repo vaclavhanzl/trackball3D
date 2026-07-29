@@ -1,0 +1,148 @@
+import os
+import select
+import evdev
+import math
+from PySide import QtCore
+import FreeCAD
+import FreeCADGui as Gui
+
+# --- COPY HARDWARE SPECIFIC SETTINGS FROM YOUR SCRIPT ---
+# devname = "Instant USB Optical Mouse" # red trackball
+devname = "USB Optical Mouse " # blue trackball
+
+def find_trackball():
+    all_devices = evdev.list_devices()
+    if not all_devices:
+        raise RuntimeError("No input devices found.")
+    devices = []
+    for path in all_devices:
+        try:
+            dev = evdev.InputDevice(path)
+        except OSError:
+            continue
+        if dev.name != devname:
+            continue
+        caps = dev.capabilities()
+        if evdev.ecodes.EV_REL not in caps:
+            continue
+        rels = set(caps[evdev.ecodes.EV_REL])
+        if evdev.ecodes.REL_X in rels and evdev.ecodes.REL_Y in rels:
+            devices.append((dev.phys, path))
+    if len(devices) != 2:
+        raise RuntimeError(f"Expected 2 sensors, found {len(devices)}")
+    devices.sort()
+    return devices[0][1], devices[1][1]
+
+class FreeCADTrackballDriver(QtCore.QObject):
+    def __init__(self):
+        super().__init__()
+        try:
+            left_path, right_path = find_trackball()
+            self.left = evdev.InputDevice(left_path)
+            self.right = evdev.InputDevice(right_path)
+            self.left.grab()
+            self.right.grab()
+            self.fds = {
+                self.left.fd: ("left", self.left),
+                self.right.fd: ("right", self.right),
+            }
+            print("Trackball connected successfully.")
+        except Exception as e:
+            print(f"Trackball initialization failed: {e}")
+            self.fds = {}
+
+        # Set up a QTimer to check for data every 10ms (100Hz max, matching your PyMOL loop)
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self.read_and_update_cam)
+        
+    def start(self):
+        if self.fds:
+            self.timer.start(10) # 10 ms interval
+
+    def stop(self):
+        self.timer.stop()
+        if hasattr(self, 'left'): self.left.ungrab()
+        if hasattr(self, 'right'): self.right.ungrab()
+        print("Trackball driver stopped.")
+
+    def read_and_update_cam(self):
+        # Non-blocking poll (timeout = 0) to check if data is waiting
+        ready, _, _ = select.select(self.fds, [], [], 0)
+        if not ready:
+            return
+
+        left_dx, left_dy, left_dw = 0, 0, 0
+        right_dx, right_dy, right_dw = 0, 0, 0
+
+        # Read accumulated events from the buffered devices
+        for fd in ready:
+            name, dev = self.fds[fd]
+            try:
+                for event in dev.read():
+                    if event.type != evdev.ecodes.EV_REL:
+                        continue
+                    if event.code == evdev.ecodes.REL_X:
+                        if name == "left": left_dx += event.value
+                        else: right_dx += event.value
+                    elif event.code == evdev.ecodes.REL_Y:
+                        if name == "left": left_dy += event.value
+                        else: right_dy += event.value
+                    elif event.code == evdev.ecodes.REL_WHEEL:
+                        if name == "left": left_dw += event.value
+                        else: right_dw += event.value
+            except OSError:
+                # Handle temporary read or disconnection issues smoothly
+                return
+
+        # Check if any relative movement occurred
+        if any([left_dx, left_dy, right_dx, right_dy, left_dw, right_dw]):
+            # 1. Translate raw sensor inputs to dx, dy, dz, dw (Fused exactly like your trackball_xyz)
+            dx = left_dx * 1.5
+            dy = (left_dy - right_dy) * 1.5
+            dz = -right_dx * 1.5
+            dw = left_dw + right_dw
+
+            # 2. Get active FreeCAD view
+            try:
+                view = Gui.ActiveDocument.ActiveView
+                if not view: return
+            except AttributeError:
+                return # No document open
+
+            # 3. Handle Zoom (dw) via FreeCAD's built-in camera parameter zoom method
+            if dw != 0:
+                # Positive dw zooms in, negative zooms out
+                zoom_factor = 1.1 if dw > 0 else 0.9
+                view.zoom(zoom_factor)
+
+            # 4. Handle Rotations (dx, dy, dz)
+            if dx or dy or dz:
+                # Map your physical trackball axis directly to FreeCAD viewport coordinates
+                # Sensitivity scaler adjusted for structural camera matrix rotation speed
+                scale = 0.002 
+                
+                # Mapping definitions based on your orientation goals:
+                rot_x = dy * scale     # Pitch (looking up/down)
+                rot_y = -dx * scale    # Yaw (looking left/right)
+                rot_z = -dz * scale    # Roll (spinning view)
+
+                # Convert local Euler variations to degrees for FreeCAD.Rotation
+                delta_rot = FreeCAD.Rotation(
+                    math.degrees(rot_x), 
+                    math.degrees(rot_y), 
+                    math.degrees(rot_z)
+                )
+
+                # Get existing view configuration, append changes relative to view space, update
+                current_q = view.getCameraOrientation()
+                new_q = current_q.multiply(delta_rot)
+                view.setCameraOrientation(new_q)
+
+# --- RUNNING THE DRIVER ---
+# Instantiating globally inside FreeCAD keeps the driver active and alive
+if 'trackball_driver' in globals():
+    globals()['trackball_driver'].stop()
+
+global trackball_driver
+trackball_driver = FreeCADTrackballDriver()
+trackball_driver.start()
