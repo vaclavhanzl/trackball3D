@@ -18,6 +18,7 @@ evdev_path = f"{os.getenv('HOME')}/miniforge3/envs/p3.11/lib/python3.11/site-pac
 if evdev_path not in sys.path:
     sys.path.append(evdev_path) # where to steal mamba-installed evdev package
 import select
+import time
 import evdev
 import math
 from PySide import QtCore
@@ -78,6 +79,7 @@ class FreeCADTrackballDriver(QtCore.QObject):
     def start(self):
         if self.fds:
             self.timer.start(200) # 10 ms interval
+            #self.timer.start(1000) # 10 ms interval
 
     def stop(self):
         self.timer.stop()
@@ -86,33 +88,42 @@ class FreeCADTrackballDriver(QtCore.QObject):
         print("Trackball driver stopped.")
 
     def read_and_update_cam(self):
+        #print(111)
         # Non-blocking poll (timeout = 0) to check if data is waiting
-        ready, _, _ = select.select(self.fds, [], [], 0)
+        ready, _, _ = select.select(self.fds, [], [], 0) # see https://docs.python.org/3/library/select.html
         if not ready:
             return
+        time.sleep(0.001) # the other sensor likely comes shortly as well
 
         left_dx, left_dy, left_dw = 0, 0, 0
         right_dx, right_dy, right_dw = 0, 0, 0
 
-        # Read accumulated events from the buffered devices
-        for fd in ready:
-            name, dev = self.fds[fd]
-            try:
-                for event in dev.read():
-                    if event.type != evdev.ecodes.EV_REL:
-                        continue
-                    if event.code == evdev.ecodes.REL_X:
-                        if name == "left": left_dx += event.value
-                        else: right_dx += event.value
-                    elif event.code == evdev.ecodes.REL_Y:
-                        if name == "left": left_dy += event.value
-                        else: right_dy += event.value
-                    elif event.code == evdev.ecodes.REL_WHEEL:
-                        if name == "left": left_dw += event.value
-                        else: right_dw += event.value
-            except OSError:
-                # Handle temporary read or disconnection issues smoothly
-                return
+        for i in range(5): # two passes often needed, events somehow lag
+            ready, _, _ = select.select(self.fds, [], [], 0) # maybe more fds now
+            if len(ready)==0:
+                break
+            print(i)
+
+            # Read accumulated events from the buffered devices
+            for fd in ready:
+                name, dev = self.fds[fd]
+                try:
+                    for event in dev.read():
+                        if event.type != evdev.ecodes.EV_REL:
+                            continue
+                        if event.code == evdev.ecodes.REL_X:
+                            if name == "left": left_dx += event.value
+                            else: right_dx += event.value
+                        elif event.code == evdev.ecodes.REL_Y:
+                            if name == "left": left_dy += event.value
+                            else: right_dy += event.value
+                        elif event.code == evdev.ecodes.REL_WHEEL:
+                            if name == "left": left_dw += event.value
+                            else: right_dw += event.value
+                except OSError:
+                    # Handle temporary read or disconnection issues smoothly
+                    return
+
 
         # Check if any relative movement occurred
         if any([left_dx, left_dy, right_dx, right_dy, left_dw, right_dw]):
@@ -121,6 +132,7 @@ class FreeCADTrackballDriver(QtCore.QObject):
             # dx: top of the ball to the right (axis going from you)
             # dy: top of the ball from you (axis left-right)
             # dz: ball counterclockwise around vertical axis
+            # dw: any scrollwheel
             dx = left_dx * 1.5
             dy = (left_dy - right_dy) * 1.5
             dz = -right_dx * 1.5
@@ -164,6 +176,8 @@ class FreeCADTrackballDriver(QtCore.QObject):
                 current_q = view.getCameraOrientation()
                 new_q = current_q.multiply(delta_rot)
                 view.setCameraOrientation(new_q)
+
+
 
 # --- RUNNING THE DRIVER ---
 # Instantiating globally inside FreeCAD keeps the driver active and alive
