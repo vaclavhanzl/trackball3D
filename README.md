@@ -8,8 +8,6 @@ plastic to keep it together and here you go!
 
 The latest version of my 3D printable model is available here at [my Printables page](https://www.printables.com/model/1787278-trackball3d).
 
-In the meantime, I think some pymol related tricks I used are worth publishing by themselves.
-
 ## Installation
 
 You need to get priviledges to be able to mess with mouse inputs:
