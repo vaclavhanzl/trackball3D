@@ -88,7 +88,6 @@ class FreeCADTrackballDriver(QtCore.QObject):
         print("Trackball driver stopped.")
 
     def read_and_update_cam(self):
-        #print(111)
         # Non-blocking poll (timeout = 0) to check if data is waiting
         ready, _, _ = select.select(self.fds, [], [], 0) # see https://docs.python.org/3/library/select.html
         if not ready:
@@ -102,8 +101,6 @@ class FreeCADTrackballDriver(QtCore.QObject):
             ready, _, _ = select.select(self.fds, [], [], 0) # maybe more fds now
             if len(ready)==0:
                 break
-            print(i)
-
             # Read accumulated events from the buffered devices
             for fd in ready:
                 name, dev = self.fds[fd]
@@ -157,7 +154,7 @@ class FreeCADTrackballDriver(QtCore.QObject):
             if dx or dy or dz:
                 # Map your physical trackball axis directly to FreeCAD viewport coordinates
                 # Sensitivity scaler adjusted for structural camera matrix rotation speed
-                scale = 0.002
+                scale = 0.0012
                 #scale = 0.02
                 
                 # Mapping definitions based on your orientation goals:
