@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+
+# Run like this: env/bin/python3 blue-trackball-Avogadro
+# This is a pymol version hacked to also serve Avogadro
+
+import os
+import select
+import evdev # see https://python-evdev.readthedocs.io/en/latest/usage.html
+import time
+import xmlrpc.client # for connection to pymol
+from xdo import Xdo
+xdo = Xdo()
+
+def dump_mice():
+    print("Connected mice:")
+    for path in evdev.list_devices():
+        dev = evdev.InputDevice(path)
+        try:
+            caps = dev.capabilities()
+        except OSError:
+            continue
+        if evdev.ecodes.EV_REL not in caps:
+            continue
+        print()
+        print(path)
+        print("name :", dev.name)
+        print("phys :", dev.phys)
+        print("info :", dev.info)
+
+#devname = "Instant USB Optical Mouse" # red trackball
+devname = "USB Optical Mouse " # blue trackball, note space at the end
+
+def find_trackball():
+    """
+    Find two mice used in the 3D trackball
+    """
+    all_devices = evdev.list_devices()
+    if all_devices==[]:
+        raise RuntimeError(
+            "Expected 2 trackball sensors, found no devices at all.\n"
+            "Maybe you need to do: sudo gpasswd -a YOUR_USERNAME input"
+        )
+
+    devices = []
+    for path in all_devices:
+        try:
+            dev = evdev.InputDevice(path)
+        except OSError:
+            continue
+        if dev.name != devname:
+            continue
+        caps = dev.capabilities()
+        if evdev.ecodes.EV_REL not in caps:
+            continue
+        rels = set(caps[evdev.ecodes.EV_REL])
+        if (evdev.ecodes.REL_X in rels and evdev.ecodes.REL_Y in rels):
+            devices.append((dev.phys, path))
+
+    if len(devices) != 2:
+        dump_mice()
+        raise RuntimeError(
+            f"Expected 2 trackball sensors, found {len(devices)}: "
+            f"{[path for phys, path in devices]}"
+        )
+    devices.sort() # by phys - stable across reboots - swap connectors once if wrong
+    return devices[0][1], devices[1][1]
+
+
+def trackball_activity():
+    """
+    Wait for activity of any of the two XY sensors, coalesque what comes
+    shortly after and report the movement event as physically detected.
+    """
+    left_path, right_path = find_trackball()
+    left = evdev.InputDevice(left_path)
+    right = evdev.InputDevice(right_path)
+    print("left:", left)
+    print("right:", right)
+    #print(left.capabilities(verbose=True))
+    left.grab()
+    right.grab()
+    fds = {
+        left.fd: ("left", left),
+        right.fd: ("right", right),
+    }
+
+    while True:
+        ready, _, _ = select.select(fds, [], []) # see https://docs.python.org/3/library/select.html
+        time.sleep(0.001)
+        left_dx, left_dy, left_dw, right_dx, right_dy, right_dw = 0, 0, 0, 0, 0, 0
+
+        for i in range(5):
+            ready, _, _ = select.select(fds, [], [], 0) # maybe more fds now, after sleep or even after dev.read()
+            if len(ready)==0:
+                break
+    
+            for fd in ready:
+                name, dev = fds[fd]
+                new_event_count = 0
+                for event in dev.read(): # reading from a generator, ~40 events max
+                    if event.type==evdev.ecodes.EV_KEY: # mouse button
+                        #print("EV_KEY", "press" if event.value==1 else "release")
+                        if event.value==1:
+                            yield "button_press", time.monotonic() # send it out of order now
+                        continue
+                    if event.type != evdev.ecodes.EV_REL: # X, Y, wheel
+                        #print(event.type)
+                        continue
+                    new_event_count += 1
+                    if event.code == evdev.ecodes.REL_X:
+                        if name=="left":
+                            left_dx += event.value
+                        else:
+                            right_dx += event.value
+                    elif event.code == evdev.ecodes.REL_Y:
+                        if name=="left":
+                            left_dy += event.value
+                        else:
+                            right_dy += event.value
+                    elif event.code == evdev.ecodes.REL_WHEEL or event.code == evdev.ecodes.REL_WHEEL_HI_RES:
+                        #print("wheel")
+                        if name=="left":
+                            left_dw += event.value
+                        else:
+                            right_dw += event.value
+                    else: # wheel movement goes here
+                        print(f"something else, type={event.type}, value={event.value}")
+                if new_event_count==0:
+                    break
+    
+        if left_dx or left_dy or right_dx or right_dy or left_dw or right_dw:
+            yield "move", time.monotonic(), (left_dx, left_dy, left_dw, right_dx, right_dy, right_dw)
+
+
+def trackball_xyz_OLD_RED():
+    """
+    Fuse physical movement report from sensors into a 3D movement where
+    X and Y are axis as in mathematics, Z is counter-clockwise rotation.
+    Also fix resolution discrepancy between the two mice.
+    """
+    x_corr = 1/1.41 # x is on full circumference, unlike y and z which have sqrt(2) times less
+    # right mouse has higher resolution, likely 1600 vs 1200 (different default after power on)
+    # (Maybe it remembers what I set by the now unsoldered resolution button after all?)
+    left_corr = 1600/1200
+    for kind, t, (lx, ly, lw, rx, ry, rw) in trackball_activity():
+        lx *= left_corr
+        ly *= left_corr
+        #slip = lx-rx
+        #print(f"{slip=}, {lx} vs {rx}, {rx/lx if lx!=0 else 1000}")
+        #print(f"y ratio: {ry/ly if ly!=0 else 1000}")
+        dx = (-lx-rx)*x_corr
+        dy = -ly-ry
+        dz = -ly+ry
+        yield "move3", t, (dx, dy, dz)
+
+def trackball_xyz():
+    """
+    Fuse physical movement report from sensors into a 3D movement where
+    X and Y are axis as in mathematics, Z is counter-clockwise rotation.
+    Also fix resolution discrepancy between the two mice.
+    """
+    x_corr = 1/1.41 # x is on full circumference, unlike y and z which have sqrt(2) times less
+    # right mouse has higher resolution, likely 1600 vs 1200 (different default after power on)
+    # (Maybe it remembers what I set by the now unsoldered resolution button after all?)
+    #left_corr = 1600/1200
+    left_corr = 1
+    for kind, t, *rest in trackball_activity():
+        if kind=="button_press":
+            #print("bup")
+            yield kind, t
+            continue
+        #print(f"{rest=}")
+        lx, ly, lw, rx, ry, rw = rest[0]
+        #print("##", lx, ly, rx, ry)
+        lx *= left_corr
+        ly *= left_corr
+        #slip = lx-rx
+        #print(f"{slip=}, {lx} vs {rx}, {rx/lx if lx!=0 else 1000}")
+        #print(f"y ratio: {ry/ly if ly!=0 else 1000}")
+        dx = lx*1.5
+        dy = (ly-ry)*1.5
+        dz = -rx*1.5
+        dw = lw+rw # any wheel
+        yield "move4", t, (dx, dy, dz, dw)
+
+
+#for kind, t, (dx, dy, dz) in trackball_xyz():
+#    print(dx, dy, dz)
+
+
+pymol_socket = xmlrpc.client.ServerProxy("http://localhost:9123/RPC2") # expects "pymol -R" running, now or later
+
+# For smooth movement, updating all 3 axis in one RPC call works best.
+# We need to inject this helper into pymol. It magically becomes available
+# in the already running RPC server (!). See pymol's source: pymol/rpc.py
+intro_hack = """python
+from pymol import cmd
+def turn_xyzw(x, y, z, w):
+    cmd.turn("x", x); cmd.turn("y", y); cmd.turn("z", z);
+    if w!=0: view=list(cmd.get_view()); view[11]*=1.1 if w<0 else 1/1.1; cmd.set_view(view)
+cmd.turn_xyzw = turn_xyzw
+python end
+"""
+
+
+def deliver_to_avogadro(avogadro_win, dx, dy, dz, dw):
+    """
+    Delived rotation+zoom to Avogadro
+    """
+    print(f"  delivering to Avogadro {(dx, dy, dz, dw)=}")
+    #xdo.send_keysequence_window(avogadro_win, b"Shift+Left", delay=12000)
+    #xdo.send_keysequence_window(avogadro_win, b"Ctrl+Left", delay=12000)
+
+    # Ctrl+Right   Shift+Right  Shift+Up  Shift+Down
+
+
+
+    if dx>2:
+        xdo.send_keysequence_window(avogadro_win, b"Shift+Up", delay=12000)
+    elif dx<-2:
+        xdo.send_keysequence_window(avogadro_win, b"Shift+Down", delay=12000)
+
+    if dy>2:
+        xdo.send_keysequence_window(avogadro_win, b"Ctrl+Left", delay=12000)
+    elif dy<-2:
+        xdo.send_keysequence_window(avogadro_win, b"Ctrl+Right", delay=12000)
+
+    if dz>2:
+        xdo.send_keysequence_window(avogadro_win, b"Shift+Left", delay=12000)
+    elif dz<-2:
+        xdo.send_keysequence_window(avogadro_win, b"Shift+Right", delay=12000)
+
+
+
+
+
+
+
+
+
+
+
+def deliver_xyzw(dx, dy, dz, dw):
+    """
+    Deliver rotation to pymol or Avogadro
+    """
+    print(f"delivering {(dx, dy, dz, dw)=}")
+    win = xdo.get_window_at_mouse()
+    name = xdo.get_window_name(win)
+    print(f"{win=}, {name=}")
+    if name==b'PyMOL':
+        print("  routing to pymol")
+    elif b" Avogadro " in name:
+        print("  routing to Avogadro")
+        deliver_to_avogadro(win, dx, dy, dz, dw)
+
+def trackball_pymol():
+    """
+    Read 3D trackball movements and send camera position updates to pymol.
+    If needed, inject the helper procedure there. Both pymol and this code
+    can start/stop at will and connection just works.
+    """
+    #pymol_socket.do(intro_hack)
+
+
+    stereo_on = False # we just suppose
+
+
+    pymol_connection_status = "did not try yet"
+    for kind, t, *rest in trackball_xyz():
+        if kind=="button_press":
+            print("Toggle stereo")
+            try:
+                if stereo_on:
+                    pymol_socket.do("stereo off")
+                    stereo_on = False
+                else:
+                    pymol_socket.do("stereo anaglyph")
+                    stereo_on = True
+            except:
+                print('Failed to send stereo toggle, no "pymol -R" running?')
+            continue
+
+        dx, dy, dz, dw = rest[0]
+        dx, dy, dz = -dy*0.085, dz*0.085, -dx*0.085 # map between ball and pymol coordinates
+
+
+        deliver_xyzw(dx, dy, dz, dw) # deliver to pymol or Avogadro
+
+        try:
+            pymol_socket.turn_xyzw(dx, dy, dz, dw)
+            if pymol_connection_status != "OK":
+                print("Connection for XYZW deltas to pymol works even without code inject")
+                pymol_connection_status = "OK"
+        except:
+            print("Failed to send XYZW deltas to pymol")
+            pymol_connection_status = "failed XYZW"
+            try:
+                pymol_socket.do(intro_hack)
+                print("Injected XYZ receiver into pymol")
+                pymol_socket.turn_xyz(dx, dy, dz) # try again
+                print("Established working connection for XYZW deltas to pymol")
+                pymol_connection_status = "OK"
+            except:
+                print('No "pymol -R" running?')
+                pymol_connection_status = "failed inject"
+                time.sleep(0.5) # throttle our attempts to reach pymol
+
+        time.sleep(0.01) # send 100 XYZ updates per second at maximum
+
+
+trackball_pymol()
+
+
