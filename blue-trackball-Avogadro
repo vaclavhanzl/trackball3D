@@ -202,33 +202,67 @@ cmd.turn_xyzw = turn_xyzw
 python end
 """
 
+residual_xyz = [0, 0, 0] # fractions of keystroke counts to send next time
 
 def deliver_to_avogadro(avogadro_win, dx, dy, dz, dw):
     """
     Delived rotation+zoom to Avogadro
     """
+    global residual_xyz # keystroke debt from the last time we were here
     print(f"  delivering to Avogadro {(dx, dy, dz, dw)=}")
     #xdo.send_keysequence_window(avogadro_win, b"Shift+Left", delay=12000)
     #xdo.send_keysequence_window(avogadro_win, b"Ctrl+Left", delay=12000)
 
     # Ctrl+Right   Shift+Right  Shift+Up  Shift+Down
 
+    per_key = 5 # x/y/z change per one key sent
+
+    dx, dy, dz = [d+r for d, r in zip([dx, dy, dz], residual_xyz)] # add debt
+    x_keys, y_keys, z_keys = (int(d//per_key) for d in [dx, dy, dz])
+    residual_xyz = [d-cnt*per_key for d, cnt in zip([dx, dy, dz], [x_keys, y_keys, z_keys])]
 
 
-    if dx>2:
-        xdo.send_keysequence_window(avogadro_win, b"Shift+Up", delay=12000)
-    elif dx<-2:
-        xdo.send_keysequence_window(avogadro_win, b"Shift+Down", delay=12000)
+    print(f"{(x_keys, y_keys, z_keys)=}")
 
-    if dy>2:
-        xdo.send_keysequence_window(avogadro_win, b"Ctrl+Left", delay=12000)
-    elif dy<-2:
-        xdo.send_keysequence_window(avogadro_win, b"Ctrl+Right", delay=12000)
+    delay = 0 #12000
 
-    if dz>2:
-        xdo.send_keysequence_window(avogadro_win, b"Shift+Left", delay=12000)
-    elif dz<-2:
-        xdo.send_keysequence_window(avogadro_win, b"Shift+Right", delay=12000)
+    if x_keys>0:
+        for i in range(x_keys): xdo.send_keysequence_window(avogadro_win, b"Shift+Down", delay=delay)
+    else:
+        for i in range(-x_keys): xdo.send_keysequence_window(avogadro_win, b"Shift+Up", delay=delay)
+
+    if z_keys>0:
+        for i in range(z_keys): xdo.send_keysequence_window(avogadro_win, b"Ctrl+Right", delay=delay)
+    else:
+        for i in range(-z_keys): xdo.send_keysequence_window(avogadro_win, b"Ctrl+Left", delay=delay)
+
+    if y_keys>0:
+        for i in range(y_keys): xdo.send_keysequence_window(avogadro_win, b"Shift+Right", delay=delay)
+    else:
+        for i in range(-y_keys): xdo.send_keysequence_window(avogadro_win, b"Shift+Left", delay=delay)
+
+
+
+
+
+
+
+
+
+    #if dx>2:
+    #    xdo.send_keysequence_window(avogadro_win, b"Shift+Up", delay=12000)
+    #elif dx<-2:
+    #    xdo.send_keysequence_window(avogadro_win, b"Shift+Down", delay=12000)
+    #
+    #if dy>2:
+    #    xdo.send_keysequence_window(avogadro_win, b"Ctrl+Left", delay=12000)
+    #elif dy<-2:
+    #    xdo.send_keysequence_window(avogadro_win, b"Ctrl+Right", delay=12000)
+    #
+    #if dz>2:
+    #    xdo.send_keysequence_window(avogadro_win, b"Shift+Left", delay=12000)
+    #elif dz<-2:
+    #    xdo.send_keysequence_window(avogadro_win, b"Shift+Right", delay=12000)
 
 
 
