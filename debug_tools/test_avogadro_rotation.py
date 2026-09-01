@@ -1,3 +1,8 @@
+
+# This is just a dirty quick AI-made test to verify that Avogadro has rotate RPC,
+# NOT an example how to do things. For a proper way, see:
+# https://github.com/OpenChemistry/avogadrolibs/blob/master/python/avogadro/connect.py
+
 import json
 import os
 import socket
