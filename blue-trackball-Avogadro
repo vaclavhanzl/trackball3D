@@ -11,6 +11,14 @@ import xmlrpc.client # for connection to pymol
 from xdo import Xdo
 xdo = Xdo()
 
+import json
+import socket
+import struct
+import tempfile
+
+
+
+
 def dump_mice():
     print("Connected mice:")
     for path in evdev.list_devices():
@@ -244,27 +252,23 @@ def deliver_to_avogadro(avogadro_win, dx, dy, dz, dw):
 
 
 
+def deliver_to_avogadro(avogadro_win, dx, dy, dz, dw):
+    """
+    Delived rotation+zoom to Avogadro
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect(tempfile.gettempdir() + "/avogadro")
 
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "rotateScene",
+        "params": {"x": float(dx), "y": float(dy), "z": float(dz)},
+    }).encode("utf-8")
+    sock.sendall(struct.pack(">I", len(request)) + request)
 
-
-
-
-    #if dx>2:
-    #    xdo.send_keysequence_window(avogadro_win, b"Shift+Up", delay=12000)
-    #elif dx<-2:
-    #    xdo.send_keysequence_window(avogadro_win, b"Shift+Down", delay=12000)
-    #
-    #if dy>2:
-    #    xdo.send_keysequence_window(avogadro_win, b"Ctrl+Left", delay=12000)
-    #elif dy<-2:
-    #    xdo.send_keysequence_window(avogadro_win, b"Ctrl+Right", delay=12000)
-    #
-    #if dz>2:
-    #    xdo.send_keysequence_window(avogadro_win, b"Shift+Left", delay=12000)
-    #elif dz<-2:
-    #    xdo.send_keysequence_window(avogadro_win, b"Shift+Right", delay=12000)
-
-
+    size = struct.unpack(">I", sock.recv(4))[0]
+    print(json.loads(sock.recv(size).decode("utf-8")))
 
 
 
@@ -287,6 +291,13 @@ def deliver_xyzw(dx, dy, dz, dw):
     elif b" Avogadro " in name:
         print("  routing to Avogadro")
         deliver_to_avogadro(win, dx, dy, dz, dw)
+
+def deliver_xyzw(dx, dy, dz, dw):
+    """
+    Deliver rotation to pymol or Avogadro
+    """
+    deliver_to_avogadro(0, 3*dx, 3*dy, 3*dz, dw)
+
 
 def trackball_pymol():
     """
@@ -320,6 +331,7 @@ def trackball_pymol():
 
 
         deliver_xyzw(dx, dy, dz, dw) # deliver to pymol or Avogadro
+        continue
 
         try:
             pymol_socket.turn_xyzw(dx, dy, dz, dw)
